@@ -1,7 +1,9 @@
 [package]
 name = "rc5_test"
 version = "0.1.0"
-authors = ["Ben Marsh <ben.marsh@mintlayer.org>"]
-edition = "2018"
+authors = ["Roman Titov <ffuugoo@users.noreply.github.com>", "Ben Marsh <ben.marsh@mintlayer.org>"]
+edition = "2021"
+publish = false
 
 [dependencies]
+num-traits = "0.2"
