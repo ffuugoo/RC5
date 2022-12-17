@@ -51,7 +51,7 @@ impl<T: Block> RC5<T> {
             second = words[j]
                 .wrapping_add(&first)
                 .wrapping_add(&second)
-                .rotate_left(first.wrapping_add(&second).into());
+                .uniform_rotate_left(first.wrapping_add(&second).into());
 
             subkey[i] = first;
             words[j] = second;
@@ -73,11 +73,11 @@ impl<T: Block> RC5<T> {
 
         for round in 1..=self.rounds as usize {
             first = (first ^ second)
-                .rotate_left(second.into())
+                .uniform_rotate_left(second.into())
                 .wrapping_add(&self.subkey[round * 2]);
 
             second = (second ^ first)
-                .rotate_left(first.into())
+                .uniform_rotate_left(first.into())
                 .wrapping_add(&self.subkey[round * 2 + 1]);
         }
 
@@ -95,11 +95,11 @@ impl<T: Block> RC5<T> {
         for round in (1..=self.rounds as usize).rev() {
             second = second
                 .wrapping_sub(&self.subkey[round * 2 + 1])
-                .rotate_right(first.into()) ^ first;
+                .uniform_rotate_right(first.into()) ^ first;
 
             first = first
                 .wrapping_sub(&self.subkey[round * 2])
-                .rotate_right(second.into()) ^ second;
+                .uniform_rotate_right(second.into()) ^ second;
         }
 
         first = first.wrapping_sub(&self.subkey[0]);
@@ -114,7 +114,14 @@ fn into_bytes(first: impl Block, second: impl Block) -> Vec<u8> {
 }
 
 pub trait Block:
-    Default + PrimInt + WrappingAdd + WrappingSub + ops::BitXor + From<u8> + Into<u32> + Sized
+    Default
+    + PrimInt
+    + WrappingAdd
+    + WrappingSub
+    + UniformRotate
+    + ops::BitXor
+    + From<u8>
+    + Sized
 {
     const BYTES: usize = mem::size_of::<Self>();
 
@@ -163,21 +170,6 @@ impl Block for u32 {
     }
 }
 
-// RC5 algorithm rotates words "words times".
-//
-// E.g.:
-// - if word is `u16`, it would pass `u16` as parameter to `rotate_*`
-// - if word is `u32`, it would pass `u32` as parameter to `rotate_*`
-// - etc
-//
-// However, `rotate_*` methods (for any numeric type) accept `u32` parameter,
-// which makes them impossible to use them with `u64` words.
-// (Well, *most likely* impossible to use, unless `u64` rotations never overflow `u32`...)
-//
-// And properly reimplementing them is annoyingly complicated (for such a trivial task),
-// so `u64` blocks have to be disabled for now.
-
-/*
 impl Block for u64 {
     const MAGIC_P: Self = 0xB7E151628AED2A6B;
     const MAGIC_Q: Self = 0x9E3779B97F4A7C15;
@@ -195,7 +187,70 @@ impl Block for u64 {
         self.to_le_bytes()
     }
 }
-*/
+
+// RC5 algorithm rotates words "words times".
+//
+// E.g.:
+// - if word is `u16`, it would pass `u16` as parameter to `rotate_*`
+// - if word is `u32`, it would pass `u32` as parameter to `rotate_*`
+// - etc
+//
+// However, `rotate_*` methods (for any numeric type) accept `u32` parameter,
+// which makes them impossible to use with `u64` words (unless all `u64` rotations
+// are always guaranteed to fit `u32` value... which I won't even try to prove).
+//
+// So, to be able to implement RC5 for `u64` words, `rotate_*` (and `checked_shift_*`) methods
+// are re-implemented to accept `Self` parameters.
+//
+// Implementing these methods "generically" (e.g., as a trait depending on a bunch of super-traits
+// with default implementations for all methods) is also a major pain, so implementations are
+// generated with a macro.
+
+pub trait UniformRotate {
+    fn uniform_rotate_left(self, other: Self) -> Self;
+    fn uniform_rotate_right(self, other: Self) -> Self;
+}
+
+pub trait NothrowShift {
+    fn nothrow_shift_left(self, other: Self) -> Self;
+    fn nothrow_shift_right(self, other: Self) -> Self;
+}
+
+macro_rules! rotate {
+    (@rotate $method:ident $first:ident $second:ident) => {
+        fn $method(self, other: Self) -> Self {
+            let bits = mem::size_of::<Self>() * 8;
+            let shift_by = other & (bits - 1) as Self;
+            self.$first(shift_by) | self.$second(bits as Self - shift_by)
+        }
+    };
+
+    (@shift $method:ident $op:path) => {
+        fn $method(self, other: Self) -> Self {
+            if (other as usize) < mem::size_of::<Self>() * 8 {
+                $op(self, other)
+            } else {
+                0
+            }
+        }
+    };
+
+    ($type:ty) => {
+        impl UniformRotate for $type {
+            rotate!(@rotate uniform_rotate_left nothrow_shift_left nothrow_shift_right);
+            rotate!(@rotate uniform_rotate_right nothrow_shift_right nothrow_shift_left);
+        }
+
+        impl NothrowShift for $type {
+            rotate!(@shift nothrow_shift_left std::ops::Shl::shl);
+            rotate!(@shift nothrow_shift_right std::ops::Shr::shr);
+        }
+    };
+}
+
+rotate!(u16);
+rotate!(u32);
+rotate!(u64);
 
 #[cfg(test)]
 mod tests {
